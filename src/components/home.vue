@@ -9,10 +9,14 @@
     </div>
     <div class="map-body" id="map-body" ref="map">
     </div>
-    <timeline-bar v-bind:timeBarList="timeBarList" v-show="showTimelineBar"></timeline-bar>
+    <style-bar v-on:changeStyle="changeStyle"></style-bar>
+    <timeline-bar v-bind:timeBarList="timeBarList" v-show="showTimelineBar" > </timeline-bar>
+    <div class="toggle-control">
+      <button @click="showControlBar=!showControlBar" size="mini">{{ showControlBar?'隐藏':'显示' }}</button>
+    </div>
     <control-bar v-bind:selectedArea="selectedArea" v-bind:statisticSummary="statisticSummary"
                  v-bind:statisticInfo="statisticInfo"
-                 v-show="showControlBar" v-on:clickSelect="clickSelect" v-on:clickSearch="clickSearch"></control-bar>
+                 v-show="showControlBar" v-on:clickSelect="clickSelect" v-on:clickSearch="clickSearch"> </control-bar>
     <input hidden type="file" id="select-file" @change="selectImportFile()" accept=".geojson"/>
     <popup-area-select v-on:closePopupAreaSelect="closePopupAreaSelect" v-show="showAreaSeletPopup"></popup-area-select>
   </div>
@@ -34,21 +38,27 @@
   import ControlBar from "./ControlBar";
   import PopupAreaSelect from "./PopupAreaSelect";
   import TimelineBar from "./TimelineBar";
+  import StyleBar from "./StyleBar";
 
   export default {
     name: "home",
     components: {
+      StyleBar,
       TimelineBar,
       PopupAreaSelect,
       ControlBar
     },
     data() {
       return {
-        mapboxToken: 'pk.eyJ1IjoieWFuZ2ppYW4iLCJhIjoiY2phaG1neno0MXFkNDMzbWhwNWw0bWM4aiJ9.CFmrh0LVWAbmVeed-Xr7wA',
+        mapboxToken: 'pk.eyJ1IjoidnY1NDU0NTQiLCJhIjoiY2o4NDZwcHY2MDV6MzMzczV5eTBtbnZybyJ9.LhlZtGKozugZK7_bWSKgOQ',
         chart: null,
         map: null,
         mapboxDraw: null,
         baseUrl: 'http://localhost:18080/taxiHttpServer/Search',
+        // 最大显示数量
+        maxView: 1000,
+        // 选择的carID
+        selectedID: "",
         // 选择的时间
         selectedTime: {start: 1391100000, end: 1391120000},
         // 区域选择的类型(不限，单选，起终点)
@@ -59,10 +69,10 @@
         currentSelectNum: 0,
         // 总览信息
         statisticSummary: {
-          pathCount: 123115,
-          carCount: 2102,
-          startTime: 15131202225,
-          endTime: 15831452225
+          pathCount: '加载中...',
+          carCount: '加载中...',
+          startTime: '--',
+          endTime: '--'
         },
         // 统计信息
         statisticInfo: {
@@ -120,24 +130,10 @@
           progressiveThreshold: 500,
           progressive: 200,
           backgroundColor: '#111',
-          // geo: {
-          //   center: [-74.04327099998152, 40.86737600240287],
-          //   zoom: 360,
-          //   map: 'world',
-          //   roam: true,
-          //   silent: true,
-          //   itemStyle: {
-          //     normal: {
-          //       color: 'transparent',
-          //       borderColor: 'rgba(255,255,255,0.1)',
-          //       borderWidth: 1
-          //     }
-          //   }
-          // },
           mapbox: {
-            center: [114.3017578125, 30.5906370269],
-            zoom: 10,
-            // pitch: 60,  // 倾斜度
+            center: [114.3207578125, 30.5906370269],
+            zoom: 11,
+            pitch: 45,  // 倾斜度
             // bearing: 0,  // 北朝向
             style: 'mapbox://styles/mapbox/dark-v9',
             boxHeight: 2,
@@ -162,15 +158,16 @@
             large: true,
 
             effect: {
-              show: true,
+              show: false,
               trailWidth: 2,
               trailLength: 0.1,
-              trailOpacity: 0.6,
+              trailOpacity: 1,
               constantSpeed: 0.5,
-              trailColor: 'rgb(30, 30, 60)'
+              spotIntensity:100,
+              // trailColor: 'rgb(30, 30, 60)'
             },
             lineStyle: {
-              color: 'blue',
+              color: "#1D6AB3",
               width: 0.8,
               opacity: 0.6
             },
@@ -187,8 +184,11 @@
       changeSize()
       // 初始化echarts和mapbox
       this.init()
-      // 分块获取数据
+      // 获取总览数据
+      this.fetchSummaryData()
+      // 获取轨迹数据
       this.fetchData(this.baseUrl, this.getParams())
+
     },
     methods: {
       init(params) {
@@ -228,7 +228,15 @@
         // if (idx >= this.CHUNK_COUNT) {
         //   return;
         // }
+        this.chart.showLoading('default',{
+          text: '数据加载中...',
+          color: '#ea006c',
+          textColor: '#1676ff',
+          maskColor: 'rgba(255, 255, 255, 0.6)',
+          zlevel: 0
+        });
         let dataURL = url;
+        // let dataURL = "/static/Search";
         let xhr = new XMLHttpRequest();
         xhr.open('POST', dataURL, true);
         xhr.responseType = 'arraybuffer';
@@ -246,12 +254,15 @@
           // 存储时间分布数据的列表
           let timeInfoArray = []
 
-          let timeInterval = (parseInt(that.selectedTime.end) - parseInt(that.selectedTime.start))/8
-          for (let i=0; i<=8; i++){
+          let divideNum = parseInt((parseInt(that.selectedTime.end) - parseInt(that.selectedTime.start)) / 1800.0)
+          divideNum = divideNum < 8 ? 8 : divideNum
+          let timeInterval = (parseInt(that.selectedTime.end) - parseInt(that.selectedTime.start))/divideNum
+          for (let i=0; i<=divideNum; i++){
             timeList.push(that.selectedTime.start+i*timeInterval)
             timeInfoArray.push(0)
           }
 
+          let testPoints = 0
 
           let speedSum = 0.0
           let mileSum = 0.0
@@ -268,7 +279,9 @@
             let afterLength = rawData[i++] / 1000.0;
             mileSum += afterLength
 
+            // 构造轨迹数组
             let len = parseInt(rawData[i++]);
+            testPoints += len
             for (let j = 0; j < len; j++) {
               let y = rawData[i++];
               let x = rawData[i++];
@@ -305,15 +318,31 @@
             that.timeBarList.push([timeList[i]*1000, timeInfoArray[i]])
           }
 
-          that.chart.appendData({
-            seriesIndex: 0,
-            data: lines
-          });
+          that.optionLines3D.series[0].data = lines
+          that.renderLines()
+          // that.chart.setOption(that.optionLines3D, true);
+          // that.chart.appendData({
+          //   seriesIndex: 0,
+          //   data: lines
+          // });
           that.dataCount += addedDataCount;
+          that.chart.hideLoading();
+          console.log(testPoints)
         }
         xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
         xhr.send('params=' + params);
       },
+
+      fetchSummaryData(){
+        this.$http.get('/taxiHttpServer/Search').then((res)=>{
+          let json = res.body
+          this.statisticSummary.startTime = json.dateInfo.minDate_count.min
+          this.statisticSummary.endTime = json.dateInfo.minDate_count.max
+          this.statisticSummary.carCount = json.carNum
+          this.statisticSummary.pathCount = json.totalNum
+        })
+      },
+
       // 手动选择确定后的回调函数
       callbackSelete() {
         let data = this.mapboxDraw.getAll()
@@ -385,30 +414,59 @@
         }
       },
       // 点击查询后的响应函数
-      clickSearch(time, areaType) {
+      clickSearch(maxView, carInfo, time, areaType) {
+        this.maxView = maxView
+        this.selectedID = carInfo.ID
         this.selectedTime = time
         this.selectedAreaType = areaType
         if ((areaType === 1 && !this.selectedArea[0].selected) ||
-          (areaType === 2 && (!this.selectedArea[1].selected || !this.selectedArea[2].selected))) {
+          (areaType === 2 && (!this.selectedArea[1].selected && !this.selectedArea[2].selected))) {
           return alert("区域选择有误！")
         }
         this.fetchData(this.baseUrl, this.getParams())
       },
       getParams() {
         let params = {}
+        if(this.maxView >= 0){
+          params["maxView"] = this.maxView
+        }
+
+        if(this.selectedID !== ""){
+          params["carID"] = this.selectedID
+        }
 
         if (this.selectedTime.start) {
-          params.st = this.selectedTime.start
+          params["st"] = this.selectedTime.start + ""
         }
         if (this.selectedTime.end) {
-          params.et = this.selectedTime.end
+          params["et"] = this.selectedTime.end + ""
         }
         if (this.selectedAreaType === 1 && this.selectedArea[0].selected) {
-          params.area1 = this.selectedArea[0].coords
+          let list = this.selectedArea[0].coords[0].map(function (v) {
+            let s = v.reverse().join(",")
+            v.reverse()
+            return s
+          })
+          let str = list.join(";")
+          params["area1"] = str
         }
-        if (this.selectedAreaType === 2 && this.selectedArea[1].selected && this.selectedArea[2].selected) {
-          params.area2 = this.selectedArea[1].coords
-          params.area3 = this.selectedArea[2].coords
+        if (this.selectedAreaType === 2 && this.selectedArea[1].selected) {
+          let list1 = this.selectedArea[1].coords[0].map(function (v) {
+            let s = v.reverse().join(",")
+            v.reverse()
+            return s
+          })
+          let str1 = list1.join(";")
+          params["area2"] = str1
+        }
+        if (this.selectedAreaType === 2 && this.selectedArea[2].selected) {
+          let list2 = this.selectedArea[2].coords[0].map(function (v) {
+            let s = v.reverse().join(",")
+            v.reverse()
+            return s
+          })
+          let str2 = list2.join(";")
+          params["area3"] = str2
         }
 
         return JSON.stringify(params)
@@ -418,6 +476,20 @@
         this.statisticInfo.barSpeed = [0,0,0,0,0,0]
         this.statisticInfo.barMile= [0,0,0,0,0,0]
         // this.statisticInfo.timeBarList = []
+      },
+      changeStyle(style){
+        this.optionLines3D.series[0].lineStyle.color = style.color
+        this.optionLines3D.series[0].lineStyle.width = style.width
+        this.optionLines3D.series[0].lineStyle.opacity = style.opacity
+        this.optionLines3D.series[0].effect.show = style.effect
+        this.optionLines3D.mapbox.style = style.mapStyle==='1' ? 'mapbox://styles/mapbox/dark-v9' : 'mapbox://styles/mapbox/streets-v9'
+        this.renderLines()
+      },
+      // 开始渲染、重新渲染
+      renderLines(){
+        console.log(Date.now())
+        this.chart.setOption(this.optionLines3D, true);
+        console.log(Date.now())
       }
     },
     beforeDestroy() {
@@ -477,9 +549,31 @@
     margin: 0 auto;
   }
 
+  .toggle-control{
+    position: fixed;
+    bottom: 1px;
+    right: 1px;
+    width: 45px;
+    height: 38px;
+    z-index: 999;
+  }
+  .toggle-control button{
+    background: white;
+    border: none;
+    border-radius: 15px;
+    height: 30px;
+    width: 30px;
+    font-size: x-small;
+    font-weight: bolder;
+    outline: none;
+    cursor: pointer;
+    box-shadow: lightyellow 1px 1px 1px;
+    color: #6d0ea4;
+  }
 </style>
 <style>
   @import "../../node_modules/@mapbox/mapbox-gl-draw/dist/mapbox-gl-draw.css";
+  @import "../../node_modules/mapbox-gl/dist/mapbox-gl.css";
 
   .mapboxgl-canvas-container {
     position: absolute !important;
